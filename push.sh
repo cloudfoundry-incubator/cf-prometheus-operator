@@ -36,7 +36,16 @@ function create_certificates() {
 
 function push_prometheus() {
   cf target -o system -s system
-  cf push
+
+  GOOS=linux go build -o confgen
+  cf v3-create-app prometheus
+  cf set-env prometheus NATS_HOSTS "$(bosh instances --column Instance --column IPs | grep nats | awk '{print $2}')"
+
+  nats_cred_name=$(credhub find --name-like nats_password --output-json | jq -r .credentials[0].name)
+  cf set-env prometheus NATS_PASSWORD "$(credhub get --name ${nats_cred_name} --quiet)"
+
+  cf v3-apply-manifest -f "${prometheus_dir}/manifest.yml"
+  cf v3-push prometheus
 }
 
 pushd "${prometheus_dir}" > /dev/null
