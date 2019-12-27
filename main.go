@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -17,42 +18,12 @@ import (
 )
 
 const (
-	ScrapeTargetQueueName     = "metrics.scrape_targets"
-	appDir                    = "/home/vcap/app"
-	prometheusScrapeConfigDir = appDir + "/prometheus.d"
+	ScrapeTargetQueueName = "metrics.scrape_targets"
+	appDir                = "/home/vcap/app"
+	prometheusConfigDir   = appDir + "/prometheus.d"
 )
 
 var cfInstanceIP = os.Getenv("CF_INSTANCE_IP")
-
-type PromScrapeConfig struct {
-	GlobalConfig  GlobalConfig   `yaml:"global"`
-	ScrapeConfigs []ScrapeConfig `yaml:"scrape_configs"`
-}
-
-type GlobalConfig struct {
-	ScrapeInterval string `yaml:"scrape_interval"`
-	ScrapeTimeout  string `yaml:"scrape_timeout"`
-}
-type ScrapeConfig struct {
-	JobName      string            `yaml:"job_name"`
-	MetricsPath  string            `yaml:"metrics_path"`
-	Scheme       string            `yaml:"scheme"`
-	Params       map[string]string `yaml:"params"`
-	TlsConfig    promTlsConfig     `yaml:"tls_config"`
-	StaticConfig StaticConfig      `yaml:"static_configs"`
-}
-
-type promTlsConfig struct {
-	CaFile             string `yaml:"ca_file"`
-	CertFile           string `yaml:"cert_file"`
-	KeyFile            string `yaml:"key_file"`
-	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
-}
-
-type StaticConfig struct {
-	Targets []string          `yaml:"targets"`
-	Labels  map[string]string `yaml:"labels"`
-}
 
 type target struct {
 	Targets []string          `json:"targets",yaml:"targets"`
@@ -75,9 +46,9 @@ type configGenerator struct {
 func main() {
 	logger := log.New(os.Stderr, "nats: ", 0)
 
-	err := os.Mkdir(prometheusScrapeConfigDir, os.ModePerm)
+	err := os.Mkdir(prometheusConfigDir, os.ModePerm)
 	if err != nil {
-		logger.Fatalf("unable to make dir(%s): %s", prometheusScrapeConfigDir, err)
+		logger.Fatalf("unable to make dir(%s): %s", prometheusConfigDir, err)
 	}
 
 	cg := configGenerator{
@@ -137,14 +108,13 @@ func buildNatsConn(logger *log.Logger) *nats.Conn {
 }
 
 func (cg *configGenerator) writeConfigToFile() {
-	scrapeCfgs := cg.buildScrapeUrls()
+	urls := cg.buildScrapeUrls()
 
-	var promScrapeCfg = PromScrapeConfig{
-		GlobalConfig:  GlobalConfig{ScrapeInterval: "15s", ScrapeTimeout: "10s"},
-		ScrapeConfigs: scrapeCfgs,
+	targets := target{
+		Targets: urls,
 	}
 
-	newCfgBytes, err := yaml.Marshal(&promScrapeCfg)
+	newCfgBytes, err := json.Marshal(&targets)
 	if err != nil {
 		cg.logger.Println(err)
 		return
@@ -159,7 +129,7 @@ func (cg *configGenerator) writeConfigToFile() {
 		return
 	}
 
-	err = ioutil.WriteFile(prometheusScrapeConfigDir+"/scrape_config.yml", newCfgBytes, os.ModePerm)
+	err = ioutil.WriteFile(prometheusConfigDir+"/static_configs.json", newCfgBytes, os.ModePerm)
 	if err != nil {
 		cg.logger.Println(err)
 		return
@@ -172,7 +142,7 @@ func (cg *configGenerator) writeConfigToFile() {
 }
 
 func (cg *configGenerator) configModified(newCfgBytes []byte) bool {
-	oldCfgBytes, err := ioutil.ReadFile(prometheusScrapeConfigDir + "/scrape_config.yml")
+	oldCfgBytes, err := ioutil.ReadFile(prometheusConfigDir + "/static_configs.json")
 	if err != nil {
 		oldCfgBytes = []byte{}
 	}
@@ -180,70 +150,29 @@ func (cg *configGenerator) configModified(newCfgBytes []byte) bool {
 	return string(newCfgBytes) != string(oldCfgBytes)
 }
 
-func (cg *configGenerator) buildScrapeUrls() []ScrapeConfig {
-	var scrapeCfgs []ScrapeConfig
+func (cg *configGenerator) buildScrapeUrls() []string {
+	var targets []string
 
 	for _, scrapeTarget := range cg.timestampedTargets {
-		for _, target := range scrapeTarget.scrapeTarget.Targets {
-			host, _, _ := net.SplitHostPort(target)
+		for _, tg := range scrapeTarget.scrapeTarget.Targets {
+			host, _, _ := net.SplitHostPort(tg)
 			if host == cfInstanceIP {
 				continue
 			}
 
 			id, ok := scrapeTarget.scrapeTarget.Labels["__param_id"]
 			if ok {
-
-				scrapeCfgs = append(scrapeCfgs, cg.buildScrapeConfig(target, id))
+				url := fmt.Sprintf("https://%s/metrics?id=%s", tg, id)
+				targets = append(targets,url)
 				continue
 			}
 
-			scrapeCfgs = append(scrapeCfgs, cg.buildScrapeConfig1(target))
+			url := fmt.Sprintf("https://%s/metrics", tg)
+			targets = append(targets, url)
 		}
 	}
 
-	return scrapeCfgs
-}
-
-// I think these all need to be separate scrape_configs because of the params
-// TODO: refactor into builder options
-func(cf *configGenerator) buildScrapeConfig1(target string) ScrapeConfig {
-	staticConfig := StaticConfig{
-		Targets: []string{fmt.Sprintf("https://%s", target)},
-		Labels:  nil,
-	}
-
-	return ScrapeConfig{
-		JobName:     "cf-caitlyn-" + target,
-		Scheme:      "https",
-		MetricsPath: "/metrics",
-		TlsConfig: promTlsConfig{
-			CaFile:             appDir + "/certs/scrape_ca.crt",
-			CertFile:           appDir + "/certs/scrape.crt",
-			KeyFile:            appDir + "/certs/scrape.key",
-			InsecureSkipVerify: true,
-		},
-		StaticConfig: staticConfig,
-	}
-}
-
-func(cf *configGenerator) buildScrapeConfig(id, target string) ScrapeConfig {
-	staticConfig := StaticConfig{
-		Targets: []string{fmt.Sprintf("https://%s?id=%s", id, target)},
-		Labels:  nil,
-	}
-	 return ScrapeConfig{
-		JobName:     target,
-		Scheme:      "https",
-		MetricsPath: "/metrics",
-		Params:      map[string]string{"id": target},
-		TlsConfig: promTlsConfig{
-			CaFile:             appDir + "/certs/scrape_ca.crt",
-			CertFile:           appDir + "/certs/scrape.crt",
-			KeyFile:            appDir + "/certs/scrape.key",
-			InsecureSkipVerify: true,
-		},
-		StaticConfig: staticConfig,
-	}
+	return targets
 }
 
 func (cg *configGenerator) getPrometheusPid() (int, bool) {
