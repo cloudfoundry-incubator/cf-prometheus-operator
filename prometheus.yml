@@ -3,7 +3,7 @@ scrape_configs:
   scheme: https
   file_sd_configs:
     - files:
-      - /home/vcap/app/prometheus.d/static_configs.yml
+      - /home/vcap/app/prometheus.d/static_configs.json
   tls_config:
     ca_file: certs/scrape_ca.crt
     cert_file: certs/scrape.crt

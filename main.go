@@ -25,6 +25,8 @@ const (
 
 var cfInstanceIP = os.Getenv("CF_INSTANCE_IP")
 
+type targets []target
+
 type target struct {
 	Targets []string          `json:"targets",yaml:"targets"`
 	Labels  map[string]string `json:"labels",yaml:"labels"`
@@ -110,9 +112,8 @@ func buildNatsConn(logger *log.Logger) *nats.Conn {
 func (cg *configGenerator) writeConfigToFile() {
 	urls := cg.buildScrapeUrls()
 
-	targets := target{
-		Targets: urls,
-	}
+	tg := target{Targets: urls}
+	targets := targets{tg}
 
 	newCfgBytes, err := json.Marshal(&targets)
 	if err != nil {
