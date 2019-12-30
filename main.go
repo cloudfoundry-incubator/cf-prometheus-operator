@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -20,21 +19,38 @@ import (
 const (
 	ScrapeTargetQueueName = "metrics.scrape_targets"
 	appDir                = "/home/vcap/app"
-	prometheusConfigDir   = appDir + "/prometheus.d"
 )
 
 var cfInstanceIP = os.Getenv("CF_INSTANCE_IP")
 
-type targets []target
+type ScrapeConfigs struct {
+	ScrapeConfigs []ScrapeConfig `yaml:"scrape_configs"`
+}
 
-type target struct {
-	Targets []string          `json:"targets",yaml:"targets"`
-	Labels  map[string]string `json:"labels",yaml:"labels"`
-	Source  string            `json:"-",yaml:"source"`
+type ScrapeConfig struct {
+	JobName      string              `yaml:"job_name"`
+	MetricsPath  string              `yaml:"metrics_path"`
+	Scheme       string              `yaml:"scheme"`
+	Params       map[string][]string `yaml:"params,omitempty"`
+	TlsConfig    TlsConfig           `yaml:"tls_config"`
+	StaticConfig []Target            `yaml:"static_configs"`
+}
+
+type TlsConfig struct {
+	CaFile             string `yaml:"ca_file"`
+	CertFile           string `yaml:"cert_file"`
+	KeyFile            string `yaml:"key_file"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
+}
+
+type Target struct {
+	Targets []string          `yaml:"targets"`
+	Labels  map[string]string `yaml:"labels,omitempty"`
+	Source  string            `yaml:"source,omitempty"`
 }
 
 type timestampedTarget struct {
-	scrapeTarget *target
+	scrapeTarget *Target
 	ts           time.Time
 }
 
@@ -48,11 +64,6 @@ type configGenerator struct {
 func main() {
 	logger := log.New(os.Stderr, "nats: ", 0)
 
-	err := os.Mkdir(prometheusConfigDir, os.ModePerm)
-	if err != nil {
-		logger.Fatalf("unable to make dir(%s): %s", prometheusConfigDir, err)
-	}
-
 	cg := configGenerator{
 		timestampedTargets: map[string]timestampedTarget{},
 		logger:             logger,
@@ -60,7 +71,7 @@ func main() {
 	}
 
 	natsConn := buildNatsConn(logger)
-	_, err = natsConn.Subscribe(ScrapeTargetQueueName, cg.generate)
+	_, err := natsConn.Subscribe(ScrapeTargetQueueName, cg.generate)
 	if err != nil {
 		logger.Fatalf("failed to subscribe to %s: %s", ScrapeTargetQueueName, err)
 	}
@@ -110,12 +121,8 @@ func buildNatsConn(logger *log.Logger) *nats.Conn {
 }
 
 func (cg *configGenerator) writeConfigToFile() {
-	urls := cg.buildScrapeUrls()
-
-	tg := target{Targets: urls}
-	targets := targets{tg}
-
-	newCfgBytes, err := json.Marshal(&targets)
+	scrapeConfigs := cg.buildScrapeConfigs()
+	newCfgBytes, err := yaml.Marshal(&scrapeConfigs)
 	if err != nil {
 		cg.logger.Println(err)
 		return
@@ -130,7 +137,7 @@ func (cg *configGenerator) writeConfigToFile() {
 		return
 	}
 
-	err = ioutil.WriteFile(prometheusConfigDir+"/static_configs.json", newCfgBytes, os.ModePerm)
+	err = ioutil.WriteFile(appDir+"/prometheus.yml", newCfgBytes, os.ModePerm)
 	if err != nil {
 		cg.logger.Println(err)
 		return
@@ -143,7 +150,7 @@ func (cg *configGenerator) writeConfigToFile() {
 }
 
 func (cg *configGenerator) configModified(newCfgBytes []byte) bool {
-	oldCfgBytes, err := ioutil.ReadFile(prometheusConfigDir + "/static_configs.json")
+	oldCfgBytes, err := ioutil.ReadFile(appDir + "/prometheus.yml")
 	if err != nil {
 		oldCfgBytes = []byte{}
 	}
@@ -151,8 +158,15 @@ func (cg *configGenerator) configModified(newCfgBytes []byte) bool {
 	return string(newCfgBytes) != string(oldCfgBytes)
 }
 
-func (cg *configGenerator) buildScrapeUrls() []string {
-	var targets []string
+// TODO refactor
+func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
+	var scrapeCfgs []ScrapeConfig
+	tlsConf := TlsConfig{
+		CaFile:             appDir + "/certs/scrape_ca.crt",
+		CertFile:           appDir + "/certs/scrape.crt",
+		KeyFile:            appDir + "/certs/scrape.key",
+		InsecureSkipVerify: true,
+	}
 
 	for _, scrapeTarget := range cg.timestampedTargets {
 		for _, tg := range scrapeTarget.scrapeTarget.Targets {
@@ -163,17 +177,45 @@ func (cg *configGenerator) buildScrapeUrls() []string {
 
 			id, ok := scrapeTarget.scrapeTarget.Labels["__param_id"]
 			if ok {
-				url := fmt.Sprintf("https://%s/metrics?id=%s", tg, id)
-				targets = append(targets,url)
+				sc := ScrapeConfig{
+					JobName:     id,
+					MetricsPath: "/metrics",
+					Scheme:      "https",
+					Params: map[string][]string{
+						id: {id},
+					},
+					TlsConfig: tlsConf,
+					StaticConfig: []Target{
+						{
+							Targets: []string{tg},
+							Source:  "",
+							Labels:  nil,
+						},
+					},
+				}
+				scrapeCfgs = append(scrapeCfgs, sc)
 				continue
 			}
 
-			url := fmt.Sprintf("https://%s/metrics", tg)
-			targets = append(targets, url)
+			sc := ScrapeConfig{
+				JobName:     tg,
+				MetricsPath: "/metrics",
+				Scheme:      "https",
+				TlsConfig:   tlsConf,
+				StaticConfig: []Target{
+					{
+						Targets: []string{tg},
+						Source:  "",
+						Labels:  nil,
+					},
+				},
+			}
+			scrapeCfgs = append(scrapeCfgs, sc)
 		}
 	}
-
-	return targets
+	return ScrapeConfigs{
+		ScrapeConfigs: scrapeCfgs,
+	}
 }
 
 func (cg *configGenerator) getPrometheusPid() (int, bool) {
@@ -201,8 +243,8 @@ func (cg *configGenerator) generate(message *nats.Msg) {
 	cg.addTarget(scrapeTarget)
 }
 
-func (cg *configGenerator) unmarshalScrapeTarget(message *nats.Msg) (*target, bool) {
-	var t target
+func (cg *configGenerator) unmarshalScrapeTarget(message *nats.Msg) (*Target, bool) {
+	var t Target
 	err := yaml.Unmarshal(message.Data, &t)
 	if err != nil {
 		cg.logger.Printf("failed to unmarshal message data: %s\n", err)
@@ -212,7 +254,7 @@ func (cg *configGenerator) unmarshalScrapeTarget(message *nats.Msg) (*target, bo
 	return &t, true
 }
 
-func (cg *configGenerator) addTarget(scrapeTarget *target) {
+func (cg *configGenerator) addTarget(scrapeTarget *Target) {
 	cg.Lock()
 	defer cg.Unlock()
 
