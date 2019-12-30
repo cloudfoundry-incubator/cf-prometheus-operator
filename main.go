@@ -161,6 +161,8 @@ func (cg *configGenerator) configModified(newCfgBytes []byte) bool {
 // TODO refactor
 func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 	var scrapeCfgs []ScrapeConfig
+	paramTargets := make(map[string][]string)
+
 	tlsConf := TlsConfig{
 		CaFile:             appDir + "/certs/scrape_ca.crt",
 		CertFile:           appDir + "/certs/scrape.crt",
@@ -177,23 +179,14 @@ func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 
 			id, ok := scrapeTarget.scrapeTarget.Labels["__param_id"]
 			if ok {
-				sc := ScrapeConfig{
-					JobName:     id,
-					MetricsPath: "/metrics",
-					Scheme:      "https",
-					Params: map[string][]string{
-						id: {id},
-					},
-					TlsConfig: tlsConf,
-					StaticConfig: []Target{
-						{
-							Targets: []string{tg},
-							Source:  "",
-							Labels:  nil,
-						},
-					},
+				val, ok := paramTargets[id]
+				if ok {
+					val = append(val, tg)
+					paramTargets[id] = val
+					continue
 				}
-				scrapeCfgs = append(scrapeCfgs, sc)
+
+				paramTargets[id] = []string{tg}
 				continue
 			}
 
@@ -212,6 +205,26 @@ func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 			}
 			scrapeCfgs = append(scrapeCfgs, sc)
 		}
+	}
+
+	for jobName, ips := range paramTargets {
+		sc := ScrapeConfig{
+			JobName:     jobName,
+			MetricsPath: "/metrics",
+			Scheme:      "https",
+			Params: map[string][]string{
+				"id": {jobName},
+			},
+			TlsConfig: tlsConf,
+			StaticConfig: []Target{
+				{
+					Targets: ips,
+					Source:  "",
+					Labels:  nil,
+				},
+			},
+		}
+		scrapeCfgs = append(scrapeCfgs, sc)
 	}
 	return ScrapeConfigs{
 		ScrapeConfigs: scrapeCfgs,
