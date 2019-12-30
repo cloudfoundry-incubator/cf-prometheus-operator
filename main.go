@@ -162,6 +162,7 @@ func (cg *configGenerator) configModified(newCfgBytes []byte) bool {
 func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 	var scrapeCfgs []ScrapeConfig
 	paramTargets := make(map[string][]string)
+	var systemMetricsTargets []string
 
 	tlsConf := TlsConfig{
 		CaFile:             appDir + "/certs/scrape_ca.crt",
@@ -190,22 +191,24 @@ func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 				continue
 			}
 
-			sc := ScrapeConfig{
-				JobName:     tg,
-				MetricsPath: "/metrics",
-				Scheme:      "https",
-				TlsConfig:   tlsConf,
-				StaticConfig: []Target{
-					{
-						Targets: []string{tg},
-						Source:  "",
-						Labels:  nil,
-					},
-				},
-			}
-			scrapeCfgs = append(scrapeCfgs, sc)
+			systemMetricsTargets = append(systemMetricsTargets, tg)
 		}
 	}
+
+	sc := ScrapeConfig{
+		JobName:     "system-metrics-agent",
+		MetricsPath: "/metrics",
+		Scheme:      "https",
+		TlsConfig:   tlsConf,
+		StaticConfig: []Target{
+			{
+				Targets: systemMetricsTargets,
+				Source:  "",
+				Labels:  nil,
+			},
+		},
+	}
+	scrapeCfgs = append(scrapeCfgs, sc)
 
 	for jobName, ips := range paramTargets {
 		sc := ScrapeConfig{
@@ -226,6 +229,7 @@ func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 		}
 		scrapeCfgs = append(scrapeCfgs, sc)
 	}
+
 	return ScrapeConfigs{
 		ScrapeConfigs: scrapeCfgs,
 	}
