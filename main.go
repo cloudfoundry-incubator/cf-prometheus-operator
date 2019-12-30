@@ -158,18 +158,10 @@ func (cg *configGenerator) configModified(newCfgBytes []byte) bool {
 	return string(newCfgBytes) != string(oldCfgBytes)
 }
 
-// TODO refactor
+// TODO: refactor
 func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
-	var scrapeCfgs []ScrapeConfig
 	paramTargets := make(map[string][]string)
 	var systemMetricsTargets []string
-
-	tlsConf := TlsConfig{
-		CaFile:             appDir + "/certs/scrape_ca.crt",
-		CertFile:           appDir + "/certs/scrape.crt",
-		KeyFile:            appDir + "/certs/scrape.key",
-		InsecureSkipVerify: true,
-	}
 
 	for _, scrapeTarget := range cg.timestampedTargets {
 		for _, tg := range scrapeTarget.scrapeTarget.Targets {
@@ -195,6 +187,20 @@ func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 		}
 	}
 
+	return cg.buildConfig(paramTargets, systemMetricsTargets)
+}
+
+// TODO: refactor
+func (cg *configGenerator) buildConfig(paramTargets map[string][]string, systemMetricsTargets []string) ScrapeConfigs {
+	var scrapeCfgs []ScrapeConfig
+
+	tlsConf := TlsConfig{
+		CaFile:             appDir + "/certs/scrape_ca.crt",
+		CertFile:           appDir + "/certs/scrape.crt",
+		KeyFile:            appDir + "/certs/scrape.key",
+		InsecureSkipVerify: true,
+	}
+
 	sc := ScrapeConfig{
 		JobName:     "system-metrics-agent",
 		MetricsPath: "/metrics",
@@ -203,8 +209,6 @@ func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 		StaticConfig: []Target{
 			{
 				Targets: systemMetricsTargets,
-				Source:  "",
-				Labels:  nil,
 			},
 		},
 	}
@@ -222,8 +226,6 @@ func (cg *configGenerator) buildScrapeConfigs() ScrapeConfigs {
 			StaticConfig: []Target{
 				{
 					Targets: ips,
-					Source:  "",
-					Labels:  nil,
 				},
 			},
 		}
