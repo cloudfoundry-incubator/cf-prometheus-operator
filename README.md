@@ -1,3 +1,5 @@
+# NOTE: This repository is deprecated in favor of examples in [metrics-discovery-release](https://github.com/cloudfoundry/metrics-discovery-release)
+
 ## CF-pushable Prometheus server
 
 The `./push.sh` sets up the appropriate security groups to allow scraping for
